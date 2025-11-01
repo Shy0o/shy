@@ -1,20 +1,25 @@
 /*
 ------------------------------------------
-@Author: Auto Generated
-@Date: 2025.10.30
-@Description: gbxyc签到脚本
+@Author: Auto Generated (Modified)
+@Date: 2025.11.01
+@Description: gbxyc签到脚本 - 固定Token版
 ------------------------------------------
 
 重写配置：
 [Script]
-# 获取token
-http-request ^https:\/\/api\.alldragon\.com\/mkt2\/checkin\/getUserStatus\.json script-path=alldragon.js, requires-body=true, timeout=60, tag=AllDragon获取token
+# 获取并保存token (只需执行一次)
+http-request ^https:\/\/api\.alldragon\.com\/(mkt2\/checkin\/getUserStatus\.json|msite\/system\/batchUploadAccess\.json) script-path=alldragon.js, requires-body=true, timeout=60, tag=AllDragon获取token
 
-# 定时签到
+# 定时签到 (使用已保存的token)
 cron "0 9 * * *" script-path=alldragon.js, timeout=60, tag=AllDragon签到
 
 [MITM]
 hostname = api.alldragon.com
+
+使用说明：
+1. 首次使用：打开小程序，脚本会自动捕获并保存Authorization
+2. 之后使用：定时任务会自动使用已保存的Authorization进行签到
+3. Token失效：重新打开小程序，脚本会自动更新Authorization
 
 ⚠️【免责声明】
 ------------------------------------------
@@ -29,7 +34,6 @@ hostname = api.alldragon.com
 
 const $ = new Env("GBxyc签到脚本");
 const ckName = "alldragon_data";
-const userCookie = $.toObj($.isNode() ? process.env[ckName] : $.getdata(ckName)) || [];
 
 // 用户多账号配置
 $.userIdx = 0, $.userList = [], $.notifyMsg = [];
@@ -46,15 +50,46 @@ const tenantCode = "xycxmall";
 const clientType = "3";
 
 //------------------------------------------
+// 检查环境，加载已保存的token
+async function checkEnv() {
+    // 从本地存储读取已保存的cookie数据
+    const localData = $.getjson(ckName, []);
+    
+    if (!localData || localData.length === 0) {
+        $.msg($.name, `⚠️ 未找到已保存的Token`, `请先打开小程序，让脚本捕获Authorization`);
+        throw new Error("未找到已保存的Token，请先获取Authorization");
+    }
+    
+    $.log(`[INFO]成功加载 ${localData.length} 个账号的Token\n`);
+    
+    // 创建用户实例
+    for (let i = 0; i < localData.length; i++) {
+        const userData = localData[i];
+        if (userData.authorization) {
+            $.userList.push(new UserInfo(userData));
+            $.log(`[INFO]加载账号${i + 1}: ${userData.userName} (手机号: ${userData.mobile || '未知'})\n`);
+        }
+    }
+    
+    if ($.userList.length === 0) {
+        throw new Error("没有可用的账号，请重新获取Authorization");
+    }
+}
+
+//------------------------------------------
 async function main() {
+    $.log(`\n========== 开始执行签到任务 ==========\n`);
+    
     // 并发执行所有用户
     for (let user of $.userList) {
         $.notifyMsg = [], $.title = "";
         try {
+            $.log(`\n---------- 账号${user.index}: ${user.userName} ----------\n`);
+            
             // 获取用户状态
             let userStatus = await user.getUserStatus();
             if (user.ckStatus && userStatus) {
-                $.log(`[${user.userName || user.index}][INFO]查询用户状态成功...\n`);
+                $.log(`[${user.userName}][INFO]查询用户状态成功\n`);
                 
                 if (userStatus.hasCheckinToday) {
                     $.title = "今日已签到";
@@ -63,10 +98,10 @@ async function main() {
                     DoubleLog(`🔥 连续签到: ${userStatus.continueCheckDayNum}天`);
                 } else {
                     // 执行签到
-                    $.log(`[${user.userName || user.index}][INFO]开始执行签到...\n`);
+                    $.log(`[${user.userName}][INFO]开始执行签到...\n`);
                     let checkinResult = await user.checkin();
                     
-                    if (checkinResult) {
+                    if (checkinResult && checkinResult.success !== false) {
                         $.title = checkinResult.msg || "签到成功";
                         DoubleLog(`✅ 「${userStatus.nickname}」签到成功`);
                         DoubleLog(`🎁 获得积分: ${checkinResult.point || 0}`);
@@ -74,19 +109,30 @@ async function main() {
                         DoubleLog(`🔥 连续签到: ${userStatus.continueCheckDayNum + 1}天`);
                     } else {
                         $.title = "签到失败";
+                        const failReason = checkinResult?.msg || checkinResult?.message || "未知原因";
                         DoubleLog(`❌ 「${userStatus.nickname}」签到失败`);
+                        DoubleLog(`📋 失败原因: ${failReason}`);
+                        // 如果有错误代码，也输出
+                        if (checkinResult?.code) {
+                            DoubleLog(`🔢 错误代码: ${checkinResult.code}`);
+                        }
                     }
                 }
             } else {
-                DoubleLog(`⛔️ 「${user.userName ?? `账号${user.index}`}」check ck error!`)
+                const errorMsg = user.lastError || "Token失效或网络错误";
+                DoubleLog(`⛔️ 「${user.userName ?? `账号${user.index}`}」Token验证失败`);
+                DoubleLog(`📋 错误信息: ${errorMsg}`);
+                DoubleLog(`💡 提示: 请重新打开小程序更新Token`);
             }
             
             // notify
             await sendMsg($.notifyMsg.join("\n"));
         } catch (e) {
-            DoubleLog(`[${user.userName ?? `账号${user.index}`}][ERROR]${e}`);
+            DoubleLog(`[${user.userName ?? `账号${user.index}`}][ERROR]${e.message || e}`);
         }
     }
+    
+    $.log(`\n========== 签到任务执行完成 ==========\n`);
 }
 
 // 用户类
@@ -94,10 +140,14 @@ class UserInfo {
     constructor(user) {
         // 默认属性
         this.index = ++$.userIdx;
-        this.authorization = "" || user.authorization || user;
-        this.memberId = "" || user.memberId;
-        this.userName = user.userName;
+        this.authorization = user.authorization;  // 使用固定的authorization
+        this.memberId = user.memberId || "";
+        this.userName = user.userName || `账号${this.index}`;
+        this.mobile = user.mobile || "";
         this.ckStatus = true;
+        this.lastError = "";
+        
+        $.log(`[INFO]使用固定Token: ${this.authorization.substring(0, 50)}...\n`);
         
         // 请求封装
         this.baseUrl = `https://api.alldragon.com`;
@@ -105,8 +155,8 @@ class UserInfo {
             'Content-Type': 'application/x-www-form-urlencoded',
             'Accept-Encoding': 'gzip,compress,br,deflate',
             'Host': 'api.alldragon.com',
-            'Authorization': this.authorization,
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.64(0x1800402c) NetType/WIFI Language/zh_CN',
+            'Authorization': this.authorization,  // 固定使用保存的token
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.64(0x1800402d) NetType/WIFI Language/zh_HK',
             'Referer': 'https://servicewechat.com/wxef49bf6a5aaef56a/70/page-frame.html',
             'Connection': 'keep-alive',
         };
@@ -115,13 +165,23 @@ class UserInfo {
             try {
                 if (typeof o === 'string') o = { url: o };
                 if (o?.url?.startsWith("/") || o?.url?.startsWith(":")) o.url = this.baseUrl + o.url
+                
+                $.log(`[${this.userName}][REQUEST]${o.url}\n`);
+                
                 const res = await Request({ ...o, headers: o.headers || this.headers, url: o.url })
                 debug(res, o?.url?.replace(/\/+$/, '').substring(o?.url?.lastIndexOf('/') + 1));
-                if (res?.code !== 200) throw new Error(res?.msg || `请求失败`);
+                
+                // 详细的错误处理
+                if (res?.code !== 200) {
+                    this.lastError = res?.msg || res?.message || `请求失败(code: ${res?.code})`;
+                    throw new Error(this.lastError);
+                }
                 return res;
             } catch (e) {
                 this.ckStatus = false;
-                $.log(`[${this.userName || this.index}][ERROR]请求发起失败!${e}\n`);
+                this.lastError = e.message || e;
+                $.log(`[${this.userName}][ERROR]请求失败: ${this.lastError}\n`);
+                throw e;
             }
         }
     }
@@ -152,7 +212,9 @@ class UserInfo {
             return res?.data;
         } catch (e) {
             this.ckStatus = false;
-            $.log(`[${this.userName || this.index}][ERROR]获取用户状态失败:${e}\n`);
+            this.lastError = `获取用户状态失败: ${e.message || e}`;
+            $.log(`[${this.userName}][ERROR]${this.lastError}\n`);
+            return null;
         }
     }
     
@@ -170,49 +232,113 @@ class UserInfo {
                 dataType: "form"
             }
             let res = await this.fetch(opts);
-            $.log(`[${this.userName || this.index}][INFO]${res?.msg}\n`);
-            return res?.data;
+            $.log(`[${this.userName}][INFO]签到响应: ${res?.msg || '无消息'}\n`);
+            
+            // 返回完整的响应数据，包括可能的错误信息
+            return {
+                success: res?.code === 200,
+                msg: res?.msg,
+                code: res?.code,
+                data: res?.data,
+                point: res?.data?.point
+            };
         } catch (e) {
             this.ckStatus = false;
-            $.log(`[${this.userName || this.index}][ERROR]签到失败:${e}\n`);
+            this.lastError = `签到失败: ${e.message || e}`;
+            $.log(`[${this.userName}][ERROR]${this.lastError}\n`);
+            return {
+                success: false,
+                msg: this.lastError,
+                code: 'ERROR'
+            };
         }
     }
 }
 
-// 获取Cookie
+// 获取并保存Cookie
 async function getCookie() {
     try {
         if ($request && $request.method === 'OPTIONS') return;
         
-        const header = ObjectKeys2LowerCase($request.headers) ?? $.msg($.name, `⛔️ script run error!`, `错误的运行方式，请切换到cron环境`);
+        const header = ObjectKeys2LowerCase($request.headers);
+        if (!header) {
+            $.msg($.name, `⛔️ 获取请求头失败`, `请检查重写配置是否正确`);
+            return;
+        }
+        
         let authorization = header.authorization;
         
-        if (!authorization) throw new Error("获取Authorization失败！请检查配置是否正确");
+        if (!authorization) {
+            $.log(`[WARN]未找到Authorization，跳过保存\n`);
+            return;
+        }
         
-        // 解析JWT token获取memberId
+        $.log(`[INFO]成功捕获Authorization: ${authorization.substring(0, 50)}...\n`);
+        
+        // 解析JWT token获取用户信息
         let memberId = "";
+        let mobile = "";
+        let openId = "";
+        
         try {
             const tokenParts = authorization.split('.');
             if (tokenParts.length === 3) {
                 const payload = JSON.parse(atob(tokenParts[1]));
                 memberId = payload.memberId || "";
+                mobile = payload.mobile || "";
+                openId = payload.openId || "";
+                
+                $.log(`[INFO]解析Token成功:\n`);
+                $.log(`  - memberId: ${memberId}\n`);
+                $.log(`  - mobile: ${mobile}\n`);
+                $.log(`  - openId: ${openId}\n`);
             }
         } catch (e) {
-            $.log(`[INFO]解析token失败，使用默认配置\n`);
+            $.log(`[WARN]解析Token失败: ${e.message}\n`);
         }
         
+        // 构建用户数据
         const newData = {
             "memberId": memberId,
-            "authorization": authorization,
-            "userName": memberId ? `用户${memberId.slice(-4)}` : "新用户"
+            "mobile": mobile,
+            "authorization": authorization,  // 保存完整的authorization
+            "userName": mobile ? `手机${mobile.slice(-4)}` : (memberId ? `用户${memberId.slice(-4)}` : "新用户"),
+            "updateTime": new Date().toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai'})
         }
         
-        const index = userCookie.findIndex(e => e.memberId == newData.memberId);
-        userCookie[index] ? userCookie[index] = newData : userCookie.push(newData);
-        $.setjson(userCookie, ckName);
-        $.msg($.name, `🎉${newData.userName}更新token成功!`, ``);
+        // 读取现有数据
+        const localData = $.getjson(ckName, []);
+        
+        // 查找是否已存在该用户
+        const index = localData.findIndex(e => e.memberId === newData.memberId);
+        
+        if (index !== -1) {
+            // 更新现有用户
+            localData[index] = newData;
+            $.setjson(localData, ckName);
+            $.msg(
+                $.name, 
+                `🔄 ${newData.userName} Token更新成功!`, 
+                `手机号: ${mobile || '未知'}\n会员ID: ${memberId}\n更新时间: ${newData.updateTime}\n\n✅ Token已保存，可进行自动签到`
+            );
+            $.log(`[SUCCESS]更新账号Token: ${newData.userName}\n`);
+        } else {
+            // 添加新用户
+            localData.push(newData);
+            $.setjson(localData, ckName);
+            $.msg(
+                $.name, 
+                `🎉 ${newData.userName} 添加成功!`, 
+                `手机号: ${mobile || '未知'}\n会员ID: ${memberId}\n添加时间: ${newData.updateTime}\n\n✅ Token已保存，可进行自动签到`
+            );
+            $.log(`[SUCCESS]新增账号Token: ${newData.userName}\n`);
+        }
+        
+        $.log(`[INFO]当前共保存 ${localData.length} 个账号\n`);
+        
     } catch (e) {
-        throw e;
+        $.msg($.name, `⛔️ 保存Token失败!`, e.message || e);
+        $.log(`[ERROR]保存Token失败: ${e.message || e}\n`);
     }
 }
 
@@ -220,16 +346,22 @@ async function getCookie() {
 !(async () => {
     try {
         if (typeof $request != "undefined") {
+            // 抓包模式：保存Authorization
             await getCookie();
         } else {
+            // 定时任务模式：使用已保存的Authorization进行签到
             await checkEnv();
             await main();
         }
     } catch (e) {
-        throw e;
+        $.logErr(e);
+        $.msg($.name, `⛔️ 脚本运行错误`, e.message || e);
     }
 })()
-    .catch((e) => { $.logErr(e), $.msg($.name, `⛔️ script run error!`, e.message || e) })
+    .catch((e) => { 
+        $.logErr(e);
+        $.msg($.name, `⛔️ script run error!`, e.message || e);
+    })
     .finally(async () => {
         $.done({ ok: 1 });
     });
