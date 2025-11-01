@@ -2,7 +2,7 @@
 ------------------------------------------
 @Author: Auto Generated
 @Date: 2025.10.30
-@Description: AllDragon签到脚本
+@Description: gbxyc签到脚本
 ------------------------------------------
 
 重写配置：
@@ -27,7 +27,7 @@ hostname = api.alldragon.com
 7、所有直接或间接使用、查看此脚本的人均应该仔细阅读此声明。本人保留随时更改或补充此声明的权利。一旦您使用或复制了此脚本，即视为您已接受此免责声明。
 */
 
-const $ = new Env("AllDragon签到");
+const $ = new Env("GBxyc签到脚本");
 const ckName = "alldragon_data";
 const userCookie = $.toObj($.isNode() ? process.env[ckName] : $.getdata(ckName)) || [];
 
