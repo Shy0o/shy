@@ -190,10 +190,44 @@ class UserInfo {
                     formData.push(`${encodeURIComponent(key)}=${encodeURIComponent(body[key])}`);
                 }
                 options.body = formData.join('&');
+                log(`[${this.userName}]请求体: ${options.body.substring(0, 100)}...`);
             }
             
             const response = await httpRequest(options);
-            const result = JSON.parse(response.body);
+            
+            // 检查响应状态码
+            if (response.statusCode && response.statusCode !== 200) {
+                log(`[${this.userName}]HTTP状态码异常: ${response.statusCode}`);
+                this.lastError = `HTTP ${response.statusCode}`;
+                throw new Error(this.lastError);
+            }
+            
+            // 记录原始响应（前200字符）
+            const rawBody = response.body || '';
+            log(`[${this.userName}]原始响应(前200字): ${rawBody.substring(0, 200)}`);
+            
+            // 检查响应是否为空
+            if (!rawBody || rawBody.trim() === '') {
+                this.lastError = '服务器返回空响应';
+                throw new Error(this.lastError);
+            }
+            
+            // 检查是否为HTML响应（通常说明接口错误或需要认证）
+            if (rawBody.trim().startsWith('<')) {
+                log(`[${this.userName}]收到HTML响应，可能是接口错误或Token失效`);
+                this.lastError = 'Token可能已失效，请重新获取';
+                throw new Error(this.lastError);
+            }
+            
+            // 尝试解析JSON
+            let result;
+            try {
+                result = JSON.parse(rawBody);
+            } catch (parseError) {
+                log(`[${this.userName}]JSON解析失败: ${parseError.message}`);
+                this.lastError = `响应格式错误: ${parseError.message}`;
+                throw new Error(this.lastError);
+            }
             
             log(`[${this.userName}]响应: code=${result.code}, msg=${result.msg || '无'}`);
             
@@ -447,6 +481,10 @@ async function doCheckin() {
                         doubleLog(`📋 失败原因: ${failReason}`);
                         if (checkinResult?.code) {
                             doubleLog(`🔢 错误代码: ${checkinResult.code}`);
+                        }
+                        // 如果是Token失效，给出明确提示
+                        if (failReason.includes('Token') || failReason.includes('失效') || failReason.includes('认证')) {
+                            doubleLog(`💡 解决方案: 重新打开小程序更新Token`);
                         }
                     }
                 }
