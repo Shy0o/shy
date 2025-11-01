@@ -340,6 +340,14 @@ async function getCookie() {
         const index = dataList.findIndex(item => item.memberId === newData.memberId);
         
         if (index !== -1) {
+            // 检查Token是否有变化
+            const oldToken = dataList[index].authorization;
+            if (oldToken === authorization) {
+                log(`[信息]${newData.userName} Token未变化，跳过保存`);
+                return; // Token未变化，直接返回，不弹通知
+            }
+            
+            // Token有变化才更新并通知
             dataList[index] = newData;
             setdata(JSON.stringify(dataList), ckName);
             showMsg(
@@ -347,7 +355,9 @@ async function getCookie() {
                 `🔄 ${newData.userName} Token更新成功`,
                 `手机: ${mobile || '未知'}\n会员ID: ${memberId}\n更新: ${newData.updateTime}`
             );
+            log(`[成功]更新账号Token: ${newData.userName}`);
         } else {
+            // 新账号才通知
             dataList.push(newData);
             setdata(JSON.stringify(dataList), ckName);
             showMsg(
@@ -355,6 +365,7 @@ async function getCookie() {
                 `🎉 ${newData.userName} 添加成功`,
                 `手机: ${mobile || '未知'}\n会员ID: ${memberId}\n时间: ${newData.updateTime}`
             );
+            log(`[成功]新增账号Token: ${newData.userName}`);
         }
         
         log(`[成功]当前共保存 ${dataList.length} 个账号`);
