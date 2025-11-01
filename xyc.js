@@ -8,7 +8,7 @@
 重写配置：
 [Script]
 # 获取并保存token (只需执行一次)
-http-request ^https:\/\/api\.alldragon\.com\/(mkt2\/checkin\/getUserStatus\.json|msite\/system\/batchUploadAccess\.json) script-path=alldragon.js, requires-body=true, timeout=60, tag=AllDragon获取token
+http-request ^https:\/\/api\.alldragon\.com\/.* script-path=alldragon.js, requires-body=true, timeout=60, tag=AllDragon获取token
 
 # 定时签到 (使用已保存的token)
 cron "0 9 * * *" script-path=alldragon.js, timeout=60, tag=AllDragon签到
@@ -36,7 +36,9 @@ const $ = new Env("GBxyc签到脚本");
 const ckName = "alldragon_data";
 
 // 用户多账号配置
-$.userIdx = 0, $.userList = [], $.notifyMsg = [];
+$.userIdx = 0;
+$.userList = [];
+$.notifyMsg = [];
 
 // notify
 const notify = $.isNode() ? require('./sendNotify') : '';
@@ -52,27 +54,40 @@ const clientType = "3";
 //------------------------------------------
 // 检查环境，加载已保存的token
 async function checkEnv() {
-    // 从本地存储读取已保存的cookie数据
-    const localData = $.getjson(ckName, []);
-    
-    if (!localData || localData.length === 0) {
-        $.msg($.name, `⚠️ 未找到已保存的Token`, `请先打开小程序，让脚本捕获Authorization`);
-        throw new Error("未找到已保存的Token，请先获取Authorization");
-    }
-    
-    $.log(`[INFO]成功加载 ${localData.length} 个账号的Token\n`);
-    
-    // 创建用户实例
-    for (let i = 0; i < localData.length; i++) {
-        const userData = localData[i];
-        if (userData.authorization) {
-            $.userList.push(new UserInfo(userData));
-            $.log(`[INFO]加载账号${i + 1}: ${userData.userName} (手机号: ${userData.mobile || '未知'})\n`);
+    try {
+        // 从本地存储读取已保存的cookie数据
+        let localData;
+        if ($.isNode()) {
+            // Node.js 环境
+            localData = process.env[ckName] ? JSON.parse(process.env[ckName]) : [];
+        } else {
+            // Surge/Loon/QX 环境
+            const data = $.getdata(ckName);
+            localData = data ? JSON.parse(data) : [];
         }
-    }
-    
-    if ($.userList.length === 0) {
-        throw new Error("没有可用的账号，请重新获取Authorization");
+        
+        if (!localData || localData.length === 0) {
+            $.msg($.name, `⚠️ 未找到已保存的Token`, `请先打开小程序，让脚本捕获Authorization`);
+            throw new Error("未找到已保存的Token，请先获取Authorization");
+        }
+        
+        $.log(`[INFO]成功加载 ${localData.length} 个账号的Token\n`);
+        
+        // 创建用户实例
+        for (let i = 0; i < localData.length; i++) {
+            const userData = localData[i];
+            if (userData.authorization) {
+                $.userList.push(new UserInfo(userData));
+                $.log(`[INFO]加载账号${i + 1}: ${userData.userName} (手机号: ${userData.mobile || '未知'})\n`);
+            }
+        }
+        
+        if ($.userList.length === 0) {
+            throw new Error("没有可用的账号，请重新获取Authorization");
+        }
+    } catch (e) {
+        $.log(`[ERROR]checkEnv失败: ${e.message}\n`);
+        throw e;
     }
 }
 
@@ -82,7 +97,9 @@ async function main() {
     
     // 并发执行所有用户
     for (let user of $.userList) {
-        $.notifyMsg = [], $.title = "";
+        $.notifyMsg = [];
+        $.title = "";
+        
         try {
             $.log(`\n---------- 账号${user.index}: ${user.userName} ----------\n`);
             
@@ -135,6 +152,30 @@ async function main() {
     $.log(`\n========== 签到任务执行完成 ==========\n`);
 }
 
+// 双重日志
+function DoubleLog(data) {
+    if ($.isNode()) {
+        console.log(`${data}`);
+        $.notifyMsg.push(`${data}`);
+    } else {
+        $.log(`${data}`);
+        $.notifyMsg.push(`${data}`);
+    }
+}
+
+// 发送消息
+async function sendMsg(message) {
+    if (!message) return;
+    
+    if ($.isNode()) {
+        if (notify && notify.sendNotify) {
+            await notify.sendNotify($.name, message);
+        }
+    } else {
+        $.msg($.name, $.title || '', message);
+    }
+}
+
 // 用户类
 class UserInfo {
     constructor(user) {
@@ -147,7 +188,7 @@ class UserInfo {
         this.ckStatus = true;
         this.lastError = "";
         
-        $.log(`[INFO]使用固定Token: ${this.authorization.substring(0, 50)}...\n`);
+        $.log(`[INFO]账号${this.index}使用固定Token: ${this.authorization.substring(0, 50)}...\n`);
         
         // 请求封装
         this.baseUrl = `https://api.alldragon.com`;
@@ -160,30 +201,74 @@ class UserInfo {
             'Referer': 'https://servicewechat.com/wxef49bf6a5aaef56a/70/page-frame.html',
             'Connection': 'keep-alive',
         };
-        
-        this.fetch = async (o) => {
-            try {
-                if (typeof o === 'string') o = { url: o };
-                if (o?.url?.startsWith("/") || o?.url?.startsWith(":")) o.url = this.baseUrl + o.url
-                
-                $.log(`[${this.userName}][REQUEST]${o.url}\n`);
-                
-                const res = await Request({ ...o, headers: o.headers || this.headers, url: o.url })
-                debug(res, o?.url?.replace(/\/+$/, '').substring(o?.url?.lastIndexOf('/') + 1));
-                
-                // 详细的错误处理
-                if (res?.code !== 200) {
-                    this.lastError = res?.msg || res?.message || `请求失败(code: ${res?.code})`;
-                    throw new Error(this.lastError);
+    }
+    
+    // 请求方法
+    async fetch(o) {
+        try {
+            if (typeof o === 'string') o = { url: o };
+            if (o?.url?.startsWith("/")) o.url = this.baseUrl + o.url;
+            
+            $.log(`[${this.userName}][REQUEST]${o.url}\n`);
+            
+            // 构建请求参数
+            let options = {
+                url: o.url,
+                headers: o.headers || this.headers
+            };
+            
+            // 处理POST请求体
+            if (o.type && o.type.toLowerCase() === 'post') {
+                if (o.dataType === 'form' && o.body) {
+                    // 将body对象转换为表单格式
+                    let formData = [];
+                    for (let key in o.body) {
+                        formData.push(`${encodeURIComponent(key)}=${encodeURIComponent(o.body[key])}`);
+                    }
+                    options.body = formData.join('&');
                 }
-                return res;
-            } catch (e) {
-                this.ckStatus = false;
-                this.lastError = e.message || e;
-                $.log(`[${this.userName}][ERROR]请求失败: ${this.lastError}\n`);
-                throw e;
             }
+            
+            // 发起请求
+            const res = await this.httpRequest(options);
+            
+            $.log(`[${this.userName}][RESPONSE]code: ${res?.code}, msg: ${res?.msg}\n`);
+            
+            // 详细的错误处理
+            if (res?.code !== 200) {
+                this.lastError = res?.msg || res?.message || `请求失败(code: ${res?.code})`;
+                throw new Error(this.lastError);
+            }
+            return res;
+        } catch (e) {
+            this.ckStatus = false;
+            this.lastError = e.message || e;
+            $.log(`[${this.userName}][ERROR]请求失败: ${this.lastError}\n`);
+            throw e;
         }
+    }
+    
+    // HTTP请求封装
+    async httpRequest(options) {
+        return new Promise((resolve, reject) => {
+            if ($.isNode()) {
+                // Node.js环境使用axios或request
+                reject(new Error("Node.js环境暂不支持，请使用Surge/Loon/QX"));
+            } else {
+                // Surge/Loon/QX环境
+                const method = options.body ? 'POST' : 'GET';
+                $.http[method.toLowerCase()](options).then(response => {
+                    try {
+                        const data = JSON.parse(response.body);
+                        resolve(data);
+                    } catch (e) {
+                        reject(new Error(`解析响应失败: ${e.message}`));
+                    }
+                }).catch(err => {
+                    reject(err);
+                });
+            }
+        });
     }
     
     // 获取当前时间(YYYY-MM格式)
@@ -255,14 +340,64 @@ class UserInfo {
     }
 }
 
+// 对象键转小写
+function ObjectKeys2LowerCase(obj) {
+    if (!obj) return obj;
+    let newObj = {};
+    for (let key in obj) {
+        newObj[key.toLowerCase()] = obj[key];
+    }
+    return newObj;
+}
+
+// Base64解码（兼容性处理）
+function atob(str) {
+    if (typeof Buffer !== 'undefined') {
+        return Buffer.from(str, 'base64').toString('binary');
+    } else if (typeof window !== 'undefined' && window.atob) {
+        return window.atob(str);
+    } else {
+        // 简单实现
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+        let output = '';
+        str = str.replace(/[^A-Za-z0-9\+\/\=]/g, '');
+        
+        for (let i = 0; i < str.length;) {
+            const enc1 = chars.indexOf(str.charAt(i++));
+            const enc2 = chars.indexOf(str.charAt(i++));
+            const enc3 = chars.indexOf(str.charAt(i++));
+            const enc4 = chars.indexOf(str.charAt(i++));
+            
+            const chr1 = (enc1 << 2) | (enc2 >> 4);
+            const chr2 = ((enc2 & 15) << 4) | (enc3 >> 2);
+            const chr3 = ((enc3 & 3) << 6) | enc4;
+            
+            output += String.fromCharCode(chr1);
+            if (enc3 !== 64) output += String.fromCharCode(chr2);
+            if (enc4 !== 64) output += String.fromCharCode(chr3);
+        }
+        return output;
+    }
+}
+
 // 获取并保存Cookie
 async function getCookie() {
     try {
-        if ($request && $request.method === 'OPTIONS') return;
+        if (!$request) {
+            $.log(`[WARN]未检测到请求对象\n`);
+            return;
+        }
+        
+        if ($request.method === 'OPTIONS') {
+            $.log(`[INFO]OPTIONS请求，跳过\n`);
+            return;
+        }
+        
+        $.log(`[INFO]捕获到请求: ${$request.url}\n`);
         
         const header = ObjectKeys2LowerCase($request.headers);
         if (!header) {
-            $.msg($.name, `⛔️ 获取请求头失败`, `请检查重写配置是否正确`);
+            $.log(`[WARN]请求头为空\n`);
             return;
         }
         
@@ -304,10 +439,16 @@ async function getCookie() {
             "authorization": authorization,  // 保存完整的authorization
             "userName": mobile ? `手机${mobile.slice(-4)}` : (memberId ? `用户${memberId.slice(-4)}` : "新用户"),
             "updateTime": new Date().toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai'})
-        }
+        };
         
         // 读取现有数据
-        const localData = $.getjson(ckName, []);
+        let localData;
+        if ($.isNode()) {
+            localData = process.env[ckName] ? JSON.parse(process.env[ckName]) : [];
+        } else {
+            const data = $.getdata(ckName);
+            localData = data ? JSON.parse(data) : [];
+        }
         
         // 查找是否已存在该用户
         const index = localData.findIndex(e => e.memberId === newData.memberId);
@@ -315,7 +456,12 @@ async function getCookie() {
         if (index !== -1) {
             // 更新现有用户
             localData[index] = newData;
-            $.setjson(localData, ckName);
+            if ($.isNode()) {
+                // Node.js环境需要手动设置环境变量
+                process.env[ckName] = JSON.stringify(localData);
+            } else {
+                $.setdata(JSON.stringify(localData), ckName);
+            }
             $.msg(
                 $.name, 
                 `🔄 ${newData.userName} Token更新成功!`, 
@@ -325,7 +471,11 @@ async function getCookie() {
         } else {
             // 添加新用户
             localData.push(newData);
-            $.setjson(localData, ckName);
+            if ($.isNode()) {
+                process.env[ckName] = JSON.stringify(localData);
+            } else {
+                $.setdata(JSON.stringify(localData), ckName);
+            }
             $.msg(
                 $.name, 
                 `🎉 ${newData.userName} 添加成功!`, 
@@ -342,14 +492,25 @@ async function getCookie() {
     }
 }
 
+// Debug函数
+function debug(response, title = 'debug') {
+    if ($.is_debug === 'true') {
+        $.log(`\n============== ${title} ==============\n`);
+        $.log(typeof response === 'object' ? JSON.stringify(response, null, 2) : response);
+        $.log(`\n======================================\n`);
+    }
+}
+
 // 主程序执行入口
 !(async () => {
     try {
-        if (typeof $request != "undefined") {
+        if (typeof $request !== "undefined") {
             // 抓包模式：保存Authorization
+            $.log(`[INFO]运行模式: 抓包保存Token\n`);
             await getCookie();
         } else {
             // 定时任务模式：使用已保存的Authorization进行签到
+            $.log(`[INFO]运行模式: 定时签到\n`);
             await checkEnv();
             await main();
         }
