@@ -1,570 +1,437 @@
 /*
 ------------------------------------------
-@Author: Auto Generated (Modified)
-@Date: 2025.11.01
-@Description: gbxyc签到脚本 - 完整独立版
+@Description: 小程序签到脚本
+@Date: 2025.11.02
 ------------------------------------------
 
 重写配置：
 [Script]
-# 获取并保存token
-http-request ^https:\/\/api\.alldragon\.com\/.* script-path=alldragon.js, requires-body=true, timeout=60, tag=AllDragon获取token
-
-# 定时签到
-cron "0 9 * * *" script-path=alldragon.js, timeout=60, tag=AllDragon签到
+http-response ^https:\/\/api\.alldragon\.com\/msite\/member\/getMemberInfo\.json script-path=checkin.js, requires-body=true, timeout=60, tag=小程序获取Cookie
 
 [MITM]
 hostname = api.alldragon.com
 
-使用说明：
-1. 首次使用：打开小程序，脚本会自动捕获并保存Authorization
-2. 之后使用：定时任务会自动使用已保存的Authorization进行签到
-3. Token失效：重新打开小程序，脚本会自动更新Authorization
+⚠️【免责声明】
+------------------------------------------
+1、此脚本仅用于学习研究，不保证其合法性、准确性、有效性，请根据情况自行判断，本人对此不承担任何保证责任。
+2、由于此脚本仅用于学习研究，您必须在下载后 24 小时内将所有内容从您的计算机或手机或任何存储设备中完全删除，若违反规定引起任何事件本人对此均不负责。
+3、请勿将此脚本用于任何商业或非法目的，若违反规定请自行对此负责。
 */
 
-// ============ 环境检测 ============
-const isQuantumultX = typeof $task !== "undefined";
-const isSurge = typeof $httpClient !== "undefined" && !isQuantumultX;
-const isLoon = typeof $loon !== "undefined";
-const isNode = typeof module !== "undefined";
+const $ = new Env("小程序签到");
+const ckName = "checkin_data";
+const userCookie = $.toObj($.isNode() ? process.env[ckName] : $.getdata(ckName)) || [];
 
-// ============ 基础配置 ============
-const scriptName = "GBxyc签到脚本";
-const ckName = "alldragon_data";
-const tenantId = "4200";
-const tenantCode = "xycxmall";
-const clientType = "3";
+// 用户多账号配置
+$.userIdx = 0;
+$.userList = [];
+$.notifyMsg = [];
 
-// ============ 全局变量 ============
-let userList = [];
-let notifyMsg = [];
-let notifyTitle = "";
+// notify
+const notify = $.isNode() ? require('./sendNotify') : '';
 
-// ============ 工具函数 ============
-function log(message) {
-    console.log(message);
-}
+// debug
+$.is_debug = ($.isNode() ? process.env.IS_DEDUG : $.getdata('is_debug')) || 'false';
 
-function getdata(key) {
-    if (isSurge || isLoon) {
-        return $persistentStore.read(key);
-    } else if (isQuantumultX) {
-        return $prefs.valueForKey(key);
-    }
-    return null;
-}
-
-function setdata(value, key) {
-    if (isSurge || isLoon) {
-        return $persistentStore.write(value, key);
-    } else if (isQuantumultX) {
-        return $prefs.setValueForKey(value, key);
-    }
-    return false;
-}
-
-function showMsg(title, subtitle, message) {
-    if (isSurge || isLoon) {
-        $notification.post(title, subtitle, message);
-    } else if (isQuantumultX) {
-        $notify(title, subtitle, message);
-    }
-    log(`【通知】${title}\n${subtitle}\n${message}`);
-}
-
-function done(value = {}) {
-    if (isQuantumultX) {
-        $done(value);
-    } else if (isSurge || isLoon) {
-        $done(value);
-    }
-}
-
-// HTTP请求函数
-function httpRequest(options) {
-    return new Promise((resolve, reject) => {
-        const method = options.method || (options.body ? "POST" : "GET");
-        
-        if (isSurge || isLoon) {
-            const _method = method.toLowerCase();
-            $httpClient[_method](options, (error, response, data) => {
-                if (error) {
-                    reject(error);
-                } else {
-                    resolve({
-                        statusCode: response.status,
-                        headers: response.headers,
-                        body: data
-                    });
+//------------------------------------------
+async function main() {
+    // 并发执行所有用户
+    for (let user of $.userList) {
+        $.notifyMsg = [];
+        $.title = "";
+        try {
+            $.log(`[${user.userName || user.index}][INFO]开始执行签到任务\n`);
+            
+            // 查询用户信息
+            let userInfo = await user.getMemberInfo();
+            if (user.ckStatus && userInfo) {
+                $.log(`[${user.userName || user.index}][INFO]查询用户信息成功\n`);
+                DoubleLog(`👤 用户：${userInfo.nick_name}`);
+                DoubleLog(`📱 手机：${userInfo.mobile}`);
+                DoubleLog(`🏆 等级：${userInfo.grade_code}`);
+                DoubleLog(`💎 可用积分：${userInfo.ava_point}`);
+            }
+            
+            // 执行签到
+            let checkinResult = await user.checkin();
+            if (user.ckStatus && checkinResult) {
+                $.log(`[${user.userName || user.index}][INFO]签到成功\n`);
+                DoubleLog(`✅ 签到成功！`);
+                
+                // 解析奖励信息
+                if (checkinResult.awardList && checkinResult.awardList.length > 0) {
+                    const award = checkinResult.awardList[0];
+                    DoubleLog(`🎁 获得奖励：${award.award_desc}`);
+                    DoubleLog(`📊 连续签到：${checkinResult.consecutive ? '是' : '否'}`);
                 }
-            });
-        } else if (isQuantumultX) {
-            options.method = method;
-            $task.fetch(options).then(
-                response => resolve(response),
-                reason => reject(reason)
-            );
+                
+                // 签到后再次查询积分
+                let updatedInfo = await user.getMemberInfo();
+                if (updatedInfo) {
+                    DoubleLog(`💰 当前积分：${updatedInfo.ava_point}`);
+                }
+            } else {
+                DoubleLog(`⛔️ 「${user.userName ?? `账号${user.index}`}」签到失败或 Cookie 失效`);
+            }
+            
+            // 发送通知
+            await sendMsg($.notifyMsg.join("\n"));
+        } catch (e) {
+            DoubleLog(`[${user.userName ?? `账号${user.index}`}][ERROR]${e}`);
         }
-    });
-}
-
-// Base64解码
-function base64Decode(str) {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
-    let output = '';
-    str = str.replace(/[^A-Za-z0-9\+\/\=]/g, '');
-    
-    for (let i = 0; i < str.length;) {
-        const enc1 = chars.indexOf(str.charAt(i++));
-        const enc2 = chars.indexOf(str.charAt(i++));
-        const enc3 = chars.indexOf(str.charAt(i++));
-        const enc4 = chars.indexOf(str.charAt(i++));
-        
-        const chr1 = (enc1 << 2) | (enc2 >> 4);
-        const chr2 = ((enc2 & 15) << 4) | (enc3 >> 2);
-        const chr3 = ((enc3 & 3) << 6) | enc4;
-        
-        output += String.fromCharCode(chr1);
-        if (enc3 !== 64) output += String.fromCharCode(chr2);
-        if (enc4 !== 64) output += String.fromCharCode(chr3);
     }
-    return output;
 }
 
-// 对象键转小写
-function keysToLowerCase(obj) {
-    if (!obj) return {};
-    const newObj = {};
-    for (let key in obj) {
-        newObj[key.toLowerCase()] = obj[key];
-    }
-    return newObj;
-}
-
-// 双重日志
-function doubleLog(message) {
-    log(message);
-    notifyMsg.push(message);
-}
-
-// ============ 用户类 ============
+// 用户类
 class UserInfo {
-    constructor(userData, index) {
-        this.index = index;
-        this.authorization = userData.authorization;
-        this.memberId = userData.memberId || "";
-        this.userName = userData.userName || `账号${index}`;
-        this.mobile = userData.mobile || "";
+    constructor(user) {
+        // 默认属性
+        this.index = ++$.userIdx;
+        this.authorization = user.authorization || user;
+        this.memberId = user.memberId || "";
+        this.userName = user.userName || `用户${this.index}`;
         this.ckStatus = true;
-        this.lastError = "";
         
-        this.baseUrl = "https://api.alldragon.com";
+        // 请求封装
+        this.baseUrl = `https://api.alldragon.com`;
         this.headers = {
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.64(0x1800402c) NetType/WIFI Language/zh_HK',
             'Content-Type': 'application/x-www-form-urlencoded',
-            'Accept-Encoding': 'gzip,compress,br,deflate',
-            'Host': 'api.alldragon.com',
             'Authorization': this.authorization,
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.64(0x1800402d) NetType/WIFI Language/zh_HK',
+            'Accept-Encoding': 'gzip,compress,br,deflate',
+            'Connection': 'keep-alive',
             'Referer': 'https://servicewechat.com/wxef49bf6a5aaef56a/70/page-frame.html',
-            'Connection': 'keep-alive'
+            'Host': 'api.alldragon.com'
         };
         
-        log(`[账号${this.index}]加载完成: ${this.userName}`);
+        this.fetch = async (o) => {
+            try {
+                if (typeof o === 'string') o = { url: o };
+                if (o?.url?.startsWith("/")) o.url = this.baseUrl + o.url;
+                
+                const res = await Request({ 
+                    ...o, 
+                    headers: o.headers || this.headers, 
+                    url: o.url 
+                });
+                
+                debug(res, o?.url?.replace(/\/+$/, '').substring(o?.url?.lastIndexOf('/') + 1));
+                
+                if (res?.code !== 200) {
+                    throw new Error(res?.msg || `请求失败`);
+                }
+                
+                return res;
+            } catch (e) {
+                this.ckStatus = false;
+                $.log(`[${this.userName || this.index}][ERROR]请求发起失败! ${e}\n`);
+                return null;
+            }
+        }
     }
     
-    // 发起请求
-    async request(url, body = null) {
+    // 查询用户信息
+    async getMemberInfo() {
         try {
-            const fullUrl = url.startsWith('http') ? url : this.baseUrl + url;
-            log(`[${this.userName}]请求URL: ${fullUrl}`);
-            
-            const options = {
-                url: fullUrl,
+            const opts = {
+                url: "/msite/member/getMemberInfo.json?needPoint=1&tenantId=4200&tenantCode=xycxmall&clientType=3",
+                method: "GET",
                 headers: this.headers
             };
             
-            if (body) {
-                options.method = "POST";
-                const formData = [];
-                for (let key in body) {
-                    formData.push(`${encodeURIComponent(key)}=${encodeURIComponent(body[key])}`);
-                }
-                options.body = formData.join('&');
-                log(`[${this.userName}]请求体: ${options.body}`);
+            let res = await this.fetch(opts);
+            
+            if (res && res.success) {
+                $.log(`[${this.userName || this.index}][INFO]获取用户信息成功\n`);
+                return res.data;
+            } else {
+                $.log(`[${this.userName || this.index}][ERROR]获取用户信息失败: ${res?.msg}\n`);
+                return null;
             }
-            
-            const response = await httpRequest(options);
-            
-            // 记录响应状态
-            log(`[${this.userName}]HTTP状态: ${response.statusCode || '未知'}`);
-            
-            // 检查响应状态码
-            if (response.statusCode && response.statusCode !== 200) {
-                if (response.statusCode === 404) {
-                    this.lastError = `接口不存在(404): ${url}`;
-                    log(`[${this.userName}]${this.lastError}`);
-                    log(`[${this.userName}]请手动在小程序中签到，并查看日志找到正确的接口地址`);
-                } else {
-                    this.lastError = `HTTP ${response.statusCode}`;
-                }
-                throw new Error(this.lastError);
-            }
-            
-            // 检查响应体
-            const rawBody = response.body || '';
-            
-            if (!rawBody || rawBody.trim() === '') {
-                this.lastError = '服务器返回空响应';
-                throw new Error(this.lastError);
-            }
-            
-            // 检查是否为HTML响应
-            if (rawBody.trim().startsWith('<')) {
-                log(`[${this.userName}]收到HTML响应，Token可能失效`);
-                log(`[${this.userName}]响应内容: ${rawBody.substring(0, 200)}`);
-                this.lastError = 'Token可能已失效，请重新获取';
-                throw new Error(this.lastError);
-            }
-            
-            // 解析JSON
-            let result;
-            try {
-                result = JSON.parse(rawBody);
-                log(`[${this.userName}]响应结果: code=${result.code}, msg=${result.msg || '无消息'}`);
-            } catch (parseError) {
-                log(`[${this.userName}]JSON解析失败`);
-                log(`[${this.userName}]原始响应: ${rawBody.substring(0, 300)}`);
-                this.lastError = `响应格式错误: ${parseError.message}`;
-                throw new Error(this.lastError);
-            }
-            
-            // 检查业务状态码
-            if (result.code !== 200) {
-                this.lastError = result.msg || `请求失败(code: ${result.code})`;
-                throw new Error(this.lastError);
-            }
-            
-            return result;
         } catch (e) {
-            this.ckStatus = false;
-            this.lastError = e.message || String(e);
-            log(`[${this.userName}]请求失败: ${this.lastError}`);
-            throw e;
-        }
-    }
-    
-    // 获取当前月份
-    getCurrentMonth() {
-        const now = new Date();
-        const year = now.getFullYear();
-        const month = String(now.getMonth() + 1).padStart(2, '0');
-        return `${year}-${month}`;
-    }
-    
-    // 获取用户状态
-    async getUserStatus() {
-        try {
-            const body = {
-                startTime: this.getCurrentMonth(),
-                tenantId: tenantId,
-                tenantCode: tenantCode,
-                clientType: clientType
-            };
-            
-            log(`[${this.userName}]获取用户状态...`);
-            const result = await this.request(API_ENDPOINTS.getUserStatus, body);
-            return result.data;
-        } catch (e) {
-            this.ckStatus = false;
-            this.lastError = `获取用户状态失败: ${e.message}`;
+            $.log(`[${this.userName || this.index}][ERROR]获取用户信息异常: ${e}\n`);
             return null;
         }
     }
     
-    // 签到
+    // 每日签到
     async checkin() {
         try {
-            const body = {
-                tenantId: tenantId,
-                tenantCode: tenantCode,
-                clientType: clientType
+            const opts = {
+                url: "/mkt2/checkin/checkin.json",
+                method: "POST",
+                body: "tenantId=4200&tenantCode=xycxmall&clientType=3",
+                headers: this.headers
             };
             
-            log(`[${this.userName}]执行签到请求...`);
-            const result = await this.request(API_ENDPOINTS.doCheckin, body);
+            let res = await this.fetch(opts);
             
-            return {
-                success: result.code === 200,
-                msg: result.msg,
-                code: result.code,
-                data: result.data,
-                point: result.data?.point
-            };
+            if (res && res.success) {
+                $.log(`[${this.userName || this.index}][INFO]${res.msg}\n`);
+                return res.data;
+            } else {
+                this.ckStatus = false;
+                $.log(`[${this.userName || this.index}][ERROR]签到失败: ${res?.msg}\n`);
+                return null;
+            }
         } catch (e) {
             this.ckStatus = false;
-            this.lastError = `签到失败: ${e.message}`;
-            
-            // 如果是404错误，给出详细的帮助信息
-            if (e.message.includes('404')) {
-                this.lastError += '\n\n🔍 诊断建议:\n';
-                this.lastError += '1. 在小程序中手动点击签到按钮\n';
-                this.lastError += '2. 查看Surge/Loon日志中的[重要]标记行\n';
-                this.lastError += '3. 找到包含"checkin"的实际接口地址\n';
-                this.lastError += '4. 将正确的接口地址告诉开发者更新脚本\n';
-                this.lastError += `\n当前使用接口: ${API_ENDPOINTS.doCheckin}`;
-            }
-            
-            return {
-                success: false,
-                msg: this.lastError,
-                code: 'ERROR'
-            };
+            $.log(`[${this.userName || this.index}][ERROR]签到异常: ${e}\n`);
+            return null;
         }
     }
 }
 
-// ============ 主要功能 ============
-
-// 获取并保存Token
+// 获取 Cookie
 async function getCookie() {
     try {
-        if (!$request) {
-            log("[警告]未检测到请求对象");
-            return;
-        }
+        if ($request && $request.method === 'OPTIONS') return;
         
-        if ($request.method === 'OPTIONS') {
-            log("[信息]OPTIONS请求，跳过");
-            return;
-        }
+        const headers = ObjectKeys2LowerCase($request.headers) ?? 
+            $.msg($.name, `⛔️ script run error!`, `错误的运行方式，请切换到 cron 环境`);
         
-        log(`[信息]捕获到请求: ${$request.url}`);
-        
-        const headers = keysToLowerCase($request.headers);
-        const authorization = headers.authorization;
+        let authorization = headers.authorization;
         
         if (!authorization) {
-            log("[警告]未找到Authorization");
-            return;
+            throw new Error("获取 Authorization 失败！请检查配置是否正确");
         }
         
-        log(`[成功]捕获Authorization: ${authorization.substring(0, 50)}...`);
-        
-        // 解析JWT Token
+        // 解析响应体获取用户详细信息
         let memberId = "";
+        let userName = "未知用户";
         let mobile = "";
+        let gradeCode = "";
+        let avaPoint = 0;
         
         try {
-            const tokenParts = authorization.split('.');
-            if (tokenParts.length === 3) {
-                const payload = JSON.parse(base64Decode(tokenParts[1]));
-                memberId = payload.memberId || "";
-                mobile = payload.mobile || "";
-                
-                log(`[信息]解析Token:`);
-                log(`  - memberId: ${memberId}`);
-                log(`  - mobile: ${mobile}`);
+            const body = $.toObj($response.body);
+            if (body && body.success && body.data) {
+                const data = body.data;
+                userName = data.nick_name || "未知用户";
+                memberId = data.member_id || "";
+                mobile = data.mobile || "";
+                gradeCode = data.grade_code || "";
+                avaPoint = data.ava_point || 0;
             }
         } catch (e) {
-            log(`[警告]解析Token失败: ${e.message}`);
+            $.log(`[ERROR]解析响应体失败: ${e}\n`);
+            // 降级方案：从 JWT 解析
+            try {
+                const parts = authorization.split('.');
+                if (parts.length === 3) {
+                    const payload = JSON.parse(atob(parts[1]));
+                    memberId = payload.memberId || "";
+                    mobile = payload.mobile || "";
+                    userName = mobile ? `用户${mobile.substr(-4)}` : "未知用户";
+                }
+            } catch (je) {
+                $.log(`[ERROR]解析 JWT 失败: ${je}\n`);
+            }
         }
         
-        // 构建用户数据
+        if (!memberId) {
+            throw new Error("无法获取会员ID，请重试");
+        }
+        
         const newData = {
-            memberId: memberId,
-            mobile: mobile,
-            authorization: authorization,
-            userName: mobile ? `手机${mobile.slice(-4)}` : (memberId ? `用户${memberId.slice(-4)}` : "新用户"),
-            updateTime: new Date().toLocaleString('zh-CN')
+            "memberId": memberId,
+            "authorization": authorization,
+            "userName": userName,
+            "mobile": mobile,
+            "gradeCode": gradeCode,
+            "updateTime": new Date().toLocaleString('zh-CN')
         };
         
-        // 读取现有数据
-        const savedData = getdata(ckName);
-        let dataList = [];
+        // 检查是否是更新已有账号
+        const index = userCookie.findIndex(e => e.memberId == newData.memberId);
+        const isUpdate = index !== -1;
         
-        if (savedData) {
-            try {
-                dataList = JSON.parse(savedData);
-            } catch (e) {
-                log(`[警告]解析已保存数据失败: ${e.message}`);
-                dataList = [];
-            }
-        }
+        userCookie[index] ? userCookie[index] = newData : userCookie.push(newData);
         
-        // 查找是否已存在
-        const index = dataList.findIndex(item => item.memberId === newData.memberId);
+        $.setjson(userCookie, ckName);
         
-        if (index !== -1) {
-            // 检查Token是否有变化
-            const oldToken = dataList[index].authorization;
-            if (oldToken === authorization) {
-                log(`[信息]${newData.userName} Token未变化，跳过保存`);
-                return; // Token未变化，直接返回，不弹通知
-            }
-            
-            // Token有变化才更新并通知
-            dataList[index] = newData;
-            setdata(JSON.stringify(dataList), ckName);
-            showMsg(
-                scriptName,
-                `🔄 ${newData.userName} Token更新成功`,
-                `手机: ${mobile || '未知'}\n会员ID: ${memberId}\n更新: ${newData.updateTime}`
-            );
-            log(`[成功]更新账号Token: ${newData.userName}`);
-        } else {
-            // 新账号才通知
-            dataList.push(newData);
-            setdata(JSON.stringify(dataList), ckName);
-            showMsg(
-                scriptName,
-                `🎉 ${newData.userName} 添加成功`,
-                `手机: ${mobile || '未知'}\n会员ID: ${memberId}\n时间: ${newData.updateTime}`
-            );
-            log(`[成功]新增账号Token: ${newData.userName}`);
-        }
+        // 发送通知
+        const notifyTitle = isUpdate ? '🔄 Cookie 更新成功' : '🎉 Cookie 获取成功';
+        const notifyContent = [
+            `👤 用户：${userName}`,
+            `📱 手机：${mobile}`,
+            `🆔 会员ID：${memberId}`,
+            `🏆 等级：${gradeCode}`,
+            `💎 积分：${avaPoint}`,
+            `⏰ 更新时间：${newData.updateTime}`
+        ].join('\n');
         
-        log(`[成功]当前共保存 ${dataList.length} 个账号`);
-        
+        $.msg($.name, notifyTitle, notifyContent);
+        $.log(`[SUCCESS]${isUpdate ? '更新' : '获取'} Cookie 成功: ${userName} (${memberId})\n`);
     } catch (e) {
-        log(`[错误]保存Token失败: ${e.message}`);
-        showMsg(scriptName, "⛔️ 保存Token失败", e.message || String(e));
+        $.msg($.name, `⛔️ 获取 Cookie 失败!`, e.message || e);
+        $.log(`[ERROR]获取 Cookie 失败: ${e}\n`);
+        throw e;
     }
 }
 
-// 加载用户数据
-async function loadUsers() {
-    const savedData = getdata(ckName);
-    
-    if (!savedData) {
-        throw new Error("未找到已保存的Token，请先打开小程序获取Authorization");
-    }
-    
-    let dataList;
+// 主程序执行入口
+!(async () => {
     try {
-        dataList = JSON.parse(savedData);
-    } catch (e) {
-        throw new Error("解析Token数据失败，请重新获取");
-    }
-    
-    if (!dataList || dataList.length === 0) {
-        throw new Error("未找到可用账号，请先获取Authorization");
-    }
-    
-    log(`[信息]成功加载 ${dataList.length} 个账号`);
-    
-    for (let i = 0; i < dataList.length; i++) {
-        if (dataList[i].authorization) {
-            userList.push(new UserInfo(dataList[i], i + 1));
-        }
-    }
-    
-    if (userList.length === 0) {
-        throw new Error("没有可用的账号");
-    }
-}
-
-// 执行签到
-async function doCheckin() {
-    log("\n========== 开始执行签到任务 ==========\n");
-    
-    for (let user of userList) {
-        notifyMsg = [];
-        notifyTitle = "";
-        
-        try {
-            log(`\n---------- 账号${user.index}: ${user.userName} ----------`);
-            
-            // 获取用户状态
-            const userStatus = await user.getUserStatus();
-            
-            if (user.ckStatus && userStatus) {
-                log(`[${user.userName}]查询用户状态成功`);
-                
-                if (userStatus.hasCheckinToday) {
-                    notifyTitle = "今日已签到";
-                    doubleLog(`✅ 「${userStatus.nickname}」今日已签到`);
-                    doubleLog(`📅 累计签到: ${userStatus.accumulateCheckDayNum}天`);
-                    doubleLog(`🔥 连续签到: ${userStatus.continueCheckDayNum}天`);
-                } else {
-                    log(`[${user.userName}]开始执行签到...`);
-                    const checkinResult = await user.checkin();
-                    
-                    if (checkinResult && checkinResult.success) {
-                        notifyTitle = "签到成功";
-                        doubleLog(`✅ 「${userStatus.nickname}」签到成功`);
-                        
-                        // 显示奖励信息
-                        if (checkinResult.data && checkinResult.data.awardList) {
-                            const awards = checkinResult.data.awardList;
-                            for (let award of awards) {
-                                if (award.award_type === 1) {
-                                    // 积分奖励
-                                    doubleLog(`🎁 获得积分: ${award.award_value}`);
-                                } else {
-                                    doubleLog(`🎁 获得奖励: ${award.award_desc}`);
-                                }
-                            }
-                        } else if (checkinResult.point) {
-                            doubleLog(`🎁 获得积分: ${checkinResult.point}`);
-                        }
-                        
-                        doubleLog(`📅 累计签到: ${userStatus.accumulateCheckDayNum + 1}天`);
-                        doubleLog(`🔥 连续签到: ${userStatus.continueCheckDayNum + 1}天`);
-                    } else {
-                        notifyTitle = "签到失败";
-                        const failReason = checkinResult?.msg || "未知原因";
-                        doubleLog(`❌ 「${userStatus.nickname}」签到失败`);
-                        doubleLog(`📋 失败原因: ${failReason}`);
-                        if (checkinResult?.code) {
-                            doubleLog(`🔢 错误代码: ${checkinResult.code}`);
-                        }
-                        // 如果是Token失效，给出明确提示
-                        if (failReason.includes('Token') || failReason.includes('失效') || failReason.includes('认证')) {
-                            doubleLog(`💡 解决方案: 重新打开小程序更新Token`);
-                        }
-                    }
-                }
-            } else {
-                const errorMsg = user.lastError || "Token失效或网络错误";
-                doubleLog(`⛔️ 「${user.userName}」Token验证失败`);
-                doubleLog(`📋 错误信息: ${errorMsg}`);
-                doubleLog(`💡 提示: 请重新打开小程序更新Token`);
-            }
-            
-            // 发送通知
-            if (notifyMsg.length > 0) {
-                showMsg(scriptName, notifyTitle, notifyMsg.join("\n"));
-            }
-            
-        } catch (e) {
-            log(`[${user.userName}]执行失败: ${e.message}`);
-            showMsg(scriptName, `❌ ${user.userName}执行失败`, e.message || String(e));
-        }
-    }
-    
-    log("\n========== 签到任务执行完成 ==========\n");
-}
-
-// ============ 主程序入口 ============
-(async () => {
-    try {
-        if (typeof $request !== "undefined") {
-            // 抓包模式
-            log("[信息]运行模式: 抓包保存Token");
+        if (typeof $request != "undefined") {
             await getCookie();
         } else {
-            // 定时任务模式
-            log("[信息]运行模式: 定时签到");
-            await loadUsers();
-            await doCheckin();
+            await checkEnv();
+            await main();
         }
     } catch (e) {
-        log(`[错误]脚本运行失败: ${e.message}`);
-        showMsg(scriptName, "⛔️ 脚本运行错误", e.message || String(e));
-    } finally {
-        done();
+        throw e;
     }
-})();
+})()
+    .catch((e) => { 
+        $.logErr(e);
+        $.msg($.name, `⛔️ script run error!`, e.message || e);
+    })
+    .finally(async () => {
+        $.done({ ok: 1 });
+    });
+
+// ========== 工具函数 ==========
+
+// 检查环境
+async function checkEnv() {
+    if (userCookie.length > 0) {
+        $.log(`[INFO]共找到 ${userCookie.length} 个账号\n`);
+        for (let user of userCookie) {
+            $.userList.push(new UserInfo(user));
+        }
+    } else {
+        $.log(`[ERROR]未找到 Cookie\n`);
+        throw new Error("未找到 CK");
+    }
+}
+
+// 双端日志
+function DoubleLog(msg) {
+    if ($.is_debug === 'true' || $.is_debug === true) {
+        $.log(`[DEBUG]${msg}\n`);
+    }
+    $.notifyMsg.push(msg);
+}
+
+// Debug 日志
+function debug(res, api) {
+    if ($.is_debug === 'true' || $.is_debug === true) {
+        $.log(`[DEBUG][${api}]Response: ${JSON.stringify(res)}\n`);
+    }
+}
+
+// 发送通知
+async function sendMsg(message) {
+    if (!message) return;
+    if ($.isNode()) {
+        await notify.sendNotify($.name, message);
+    } else {
+        $.msg($.name, '', message);
+    }
+}
+
+// 对象 key 转小写
+function ObjectKeys2LowerCase(obj) {
+    return Object.fromEntries(
+        Object.entries(obj).map(([k, v]) => [k.toLowerCase(), v])
+    );
+}
+
+// HTTP 请求封装
+async function Request(options) {
+    if ($.isNode()) {
+        const axios = require('axios');
+        try {
+            const response = await axios({
+                method: options.method || 'GET',
+                url: options.url,
+                headers: options.headers,
+                data: options.body,
+                params: options.params
+            });
+            return response.data;
+        } catch (error) {
+            throw error;
+        }
+    } else {
+        return new Promise((resolve, reject) => {
+            $.http.post(options).then(response => {
+                resolve(JSON.parse(response.body));
+            }).catch(err => reject(err));
+        });
+    }
+}
+
+// Env 类 (简化版)
+function Env(name) {
+    this.name = name;
+    this.isNode = () => typeof module !== 'undefined' && !!module.exports;
+    this.toObj = (str, defaultValue = null) => {
+        try {
+            return JSON.parse(str);
+        } catch {
+            return defaultValue;
+        }
+    };
+    this.toStr = (obj, defaultValue = null) => {
+        try {
+            return JSON.stringify(obj);
+        } catch {
+            return defaultValue;
+        }
+    };
+    this.getdata = (key) => {
+        if (this.isNode()) {
+            return process.env[key] || null;
+        } else {
+            return $persistentStore.read(key) || null;
+        }
+    };
+    this.setdata = (val, key) => {
+        if (this.isNode()) {
+            return false;
+        } else {
+            return $persistentStore.write(val, key);
+        }
+    };
+    this.getjson = (key, defaultValue) => {
+        let json = this.getdata(key);
+        return json ? this.toObj(json, defaultValue) : defaultValue;
+    };
+    this.setjson = (val, key) => {
+        return this.setdata(this.toStr(val), key);
+    };
+    this.log = (msg) => console.log(msg);
+    this.logErr = (err) => console.log(err);
+    this.msg = (title, subtitle, message) => {
+        if (this.isNode()) {
+            console.log(`${title}\n${subtitle}\n${message}`);
+        } else {
+            $notification.post(title, subtitle, message);
+        }
+    };
+    this.done = (value = {}) => {
+        if (this.isNode()) {
+            process.exit(0);
+        } else {
+            $done(value);
+        }
+    };
+    this.http = {
+        post: (options) => {
+            return new Promise((resolve, reject) => {
+                $httpClient.post(options, (error, response, body) => {
+                    if (error) {
+                        reject(error);
+                    } else {
+                        resolve({ body, response });
+                    }
+                });
+            });
+        }
+    };
+}
 
 /** ---------------------------------固定不动区域----------------------------------------- */
 //prettier-ignore
