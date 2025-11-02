@@ -490,9 +490,24 @@ async function doCheckin() {
                     const checkinResult = await user.checkin();
                     
                     if (checkinResult && checkinResult.success) {
-                        notifyTitle = checkinResult.msg || "签到成功";
+                        notifyTitle = "签到成功";
                         doubleLog(`✅ 「${userStatus.nickname}」签到成功`);
-                        doubleLog(`🎁 获得积分: ${checkinResult.point || 0}`);
+                        
+                        // 显示奖励信息
+                        if (checkinResult.data && checkinResult.data.awardList) {
+                            const awards = checkinResult.data.awardList;
+                            for (let award of awards) {
+                                if (award.award_type === 1) {
+                                    // 积分奖励
+                                    doubleLog(`🎁 获得积分: ${award.award_value}`);
+                                } else {
+                                    doubleLog(`🎁 获得奖励: ${award.award_desc}`);
+                                }
+                            }
+                        } else if (checkinResult.point) {
+                            doubleLog(`🎁 获得积分: ${checkinResult.point}`);
+                        }
+                        
                         doubleLog(`📅 累计签到: ${userStatus.accumulateCheckDayNum + 1}天`);
                         doubleLog(`🔥 连续签到: ${userStatus.continueCheckDayNum + 1}天`);
                     } else {
