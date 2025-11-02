@@ -176,7 +176,7 @@ class UserInfo {
     async request(url, body = null) {
         try {
             const fullUrl = url.startsWith('http') ? url : this.baseUrl + url;
-            log(`[${this.userName}]请求: ${fullUrl}`);
+            log(`[${this.userName}]请求URL: ${fullUrl}`);
             
             const options = {
                 url: fullUrl,
@@ -190,47 +190,55 @@ class UserInfo {
                     formData.push(`${encodeURIComponent(key)}=${encodeURIComponent(body[key])}`);
                 }
                 options.body = formData.join('&');
-                log(`[${this.userName}]请求体: ${options.body.substring(0, 100)}...`);
+                log(`[${this.userName}]请求体: ${options.body}`);
             }
             
             const response = await httpRequest(options);
             
+            // 记录响应状态
+            log(`[${this.userName}]HTTP状态: ${response.statusCode || '未知'}`);
+            
             // 检查响应状态码
             if (response.statusCode && response.statusCode !== 200) {
-                log(`[${this.userName}]HTTP状态码异常: ${response.statusCode}`);
-                this.lastError = `HTTP ${response.statusCode}`;
+                if (response.statusCode === 404) {
+                    this.lastError = `接口不存在(404): ${url}`;
+                    log(`[${this.userName}]${this.lastError}`);
+                    log(`[${this.userName}]请手动在小程序中签到，并查看日志找到正确的接口地址`);
+                } else {
+                    this.lastError = `HTTP ${response.statusCode}`;
+                }
                 throw new Error(this.lastError);
             }
             
-            // 记录原始响应（前200字符）
+            // 检查响应体
             const rawBody = response.body || '';
-            log(`[${this.userName}]原始响应(前200字): ${rawBody.substring(0, 200)}`);
             
-            // 检查响应是否为空
             if (!rawBody || rawBody.trim() === '') {
                 this.lastError = '服务器返回空响应';
                 throw new Error(this.lastError);
             }
             
-            // 检查是否为HTML响应（通常说明接口错误或需要认证）
+            // 检查是否为HTML响应
             if (rawBody.trim().startsWith('<')) {
-                log(`[${this.userName}]收到HTML响应，可能是接口错误或Token失效`);
+                log(`[${this.userName}]收到HTML响应，Token可能失效`);
+                log(`[${this.userName}]响应内容: ${rawBody.substring(0, 200)}`);
                 this.lastError = 'Token可能已失效，请重新获取';
                 throw new Error(this.lastError);
             }
             
-            // 尝试解析JSON
+            // 解析JSON
             let result;
             try {
                 result = JSON.parse(rawBody);
+                log(`[${this.userName}]响应结果: code=${result.code}, msg=${result.msg || '无消息'}`);
             } catch (parseError) {
-                log(`[${this.userName}]JSON解析失败: ${parseError.message}`);
+                log(`[${this.userName}]JSON解析失败`);
+                log(`[${this.userName}]原始响应: ${rawBody.substring(0, 300)}`);
                 this.lastError = `响应格式错误: ${parseError.message}`;
                 throw new Error(this.lastError);
             }
             
-            log(`[${this.userName}]响应: code=${result.code}, msg=${result.msg || '无'}`);
-            
+            // 检查业务状态码
             if (result.code !== 200) {
                 this.lastError = result.msg || `请求失败(code: ${result.code})`;
                 throw new Error(this.lastError);
@@ -263,7 +271,8 @@ class UserInfo {
                 clientType: clientType
             };
             
-            const result = await this.request("/mkt2/checkin/getUserStatus.json", body);
+            log(`[${this.userName}]获取用户状态...`);
+            const result = await this.request(API_ENDPOINTS.getUserStatus, body);
             return result.data;
         } catch (e) {
             this.ckStatus = false;
@@ -281,7 +290,8 @@ class UserInfo {
                 clientType: clientType
             };
             
-            const result = await this.request("/mkt2/checkin/doCheckin.json", body);
+            log(`[${this.userName}]执行签到请求...`);
+            const result = await this.request(API_ENDPOINTS.doCheckin, body);
             
             return {
                 success: result.code === 200,
@@ -293,6 +303,17 @@ class UserInfo {
         } catch (e) {
             this.ckStatus = false;
             this.lastError = `签到失败: ${e.message}`;
+            
+            // 如果是404错误，给出详细的帮助信息
+            if (e.message.includes('404')) {
+                this.lastError += '\n\n🔍 诊断建议:\n';
+                this.lastError += '1. 在小程序中手动点击签到按钮\n';
+                this.lastError += '2. 查看Surge/Loon日志中的[重要]标记行\n';
+                this.lastError += '3. 找到包含"checkin"的实际接口地址\n';
+                this.lastError += '4. 将正确的接口地址告诉开发者更新脚本\n';
+                this.lastError += `\n当前使用接口: ${API_ENDPOINTS.doCheckin}`;
+            }
+            
             return {
                 success: false,
                 msg: this.lastError,
