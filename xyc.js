@@ -1,7 +1,7 @@
 /*
 ------------------------------------------
-@Description: 小程序签到脚本
-@Date: 2025.11.02
+@Description: GBXYC签到脚本
+@Date: 2025.11.05
 ------------------------------------------
 [Script]
 http-response ^https:\/\/api\.alldragon\.com\/msite\/member\/getMemberInfo\.json script-path=checkin.js, requires-body=true, timeout=60, tag=小程序获取Cookie
@@ -10,7 +10,7 @@ http-response ^https:\/\/api\.alldragon\.com\/msite\/member\/getMemberInfo\.json
 hostname = api.alldragon.com
 */
 
-const $ = new Env("小程序签到");
+const $ = new Env("GBXYC签到脚本");
 const ckName = "checkin_data";
 let userCookie = $.getjson(ckName, []);
 
