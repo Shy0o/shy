@@ -1,0 +1,64 @@
+{
+  "id": "Shy.sub",
+  "name": "ShyのBoxJS订阅",
+  "author": "@Shy",
+  "icon": "https://raw.githubusercontent.com/Orz-3/mini/master/Color/Clubhouse.png",
+  "repo": "https://github.com/Shy0o/shy",
+  "apps": [
+    {
+      "id": "Shy_广百新一城签到",
+      "name": "广百新一城签到",
+      "keys": [
+        "checkin_data",
+        "is_debug"
+      ],
+      "descs_html": [
+        "<h4>使用说明</h4>",
+        "<p>1. 添加重写规则后，打开小程序进入个人中心页面</p>",
+        "<p>2. 脚本自动获取 Cookie 并保存</p>",
+        "<p>3. 支持多账号，切换账号重复操作即可</p>",
+        "<p>4. Cookie 数据采用 JSON 格式存储，自动去重</p>",
+        "<br/>",
+        "<h4>重写配置</h4>",
+        "<code>[Script]</code><br/>",
+        "<code>http-response ^https:\\/\\/api\\.alldragon\\.com\\/msite\\/member\\/getMemberInfo\\.json script-path=checkin.js, requires-body=true, timeout=60, tag=小程序获取Cookie</code><br/>",
+        "<br/>",
+        "<code>[MITM]</code><br/>",
+        "<code>hostname = api.alldragon.com</code>",
+        "<br/>",
+        "<h4>定时任务</h4>",
+        "<code>0 8 * * * checkin.js, tag=每日签到</code>"
+      ],
+      "settings": [
+        {
+          "id": "is_debug",
+          "name": "调试模式",
+          "val": false,
+          "type": "boolean",
+          "desc": "开启后会在日志中显示详细的请求和响应信息"
+        },
+        {
+          "id": "checkin_data",
+          "name": "账号数据（JSON格式）",
+          "val": "",
+          "type": "textarea",
+          "autoGrow": true,
+          "rows": 10,
+          "desc": "自动获取，请勿手动修改。格式示例：[{\"memberId\":\"...\",\"authorization\":\"...\",\"userName\":\"...\",\"mobile\":\"...\"}]"
+        }
+      ],
+      "author": "@Shy",
+      "repo": "https://github.com/Shy0o/shy",
+      "scripts": [
+        {
+          "name": "广百新一城签到",
+          "script": "https://raw.githubusercontent.com/Shy0o/shy/refs/heads/main/xyc.js"
+        }
+      ],
+      "icons": [
+        "https://raw.githubusercontent.com/Orz-3/mini/master/Color/Clubhouse.png",
+        "https://raw.githubusercontent.com/Orz-3/mini/master/Alpha/Clubhouse.png"
+      ]
+    }
+  ]
+}
