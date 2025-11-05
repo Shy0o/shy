@@ -3,81 +3,60 @@
 @Description: 小程序签到脚本
 @Date: 2025.11.02
 ------------------------------------------
-
-重写配置：
 [Script]
 http-response ^https:\/\/api\.alldragon\.com\/msite\/member\/getMemberInfo\.json script-path=checkin.js, requires-body=true, timeout=60, tag=小程序获取Cookie
 
 [MITM]
 hostname = api.alldragon.com
-
-⚠️【免责声明】
-------------------------------------------
-1、此脚本仅用于学习研究，不保证其合法性、准确性、有效性，请根据情况自行判断，本人对此不承担任何保证责任。
-2、由于此脚本仅用于学习研究，您必须在下载后 24 小时内将所有内容从您的计算机或手机或任何存储设备中完全删除，若违反规定引起任何事件本人对此均不负责。
-3、请勿将此脚本用于任何商业或非法目的，若违反规定请自行对此负责。
 */
 
 const $ = new Env("小程序签到");
 const ckName = "checkin_data";
-const userCookie = $.toObj($.isNode() ? process.env[ckName] : $.getdata(ckName)) || [];
+let userCookie = $.getjson(ckName, []);
 
-// 用户多账号配置
+// 配置
 $.userIdx = 0;
 $.userList = [];
 $.notifyMsg = [];
-
-// notify
 const notify = $.isNode() ? require('./sendNotify') : '';
-
-// debug
-$.is_debug = ($.isNode() ? process.env.IS_DEDUG : $.getdata('is_debug')) || 'false';
+const isDebug = ($.isNode() ? process.env.IS_DEDUG : $.getdata('is_debug')) === 'true';
 
 //------------------------------------------
+// 主函数
 async function main() {
-    // 并发执行所有用户
     for (let user of $.userList) {
         $.notifyMsg = [];
-        $.title = "";
         try {
-            $.log(`[${user.userName || user.index}][INFO]开始执行签到任务\n`);
+            $.log(`[${user.userName}] 开始执行签到\n`);
             
             // 查询用户信息
             let userInfo = await user.getMemberInfo();
-            if (user.ckStatus && userInfo) {
-                $.log(`[${user.userName || user.index}][INFO]查询用户信息成功\n`);
-                DoubleLog(`👤 用户：${userInfo.nick_name}`);
-                DoubleLog(`📱 手机：${userInfo.mobile}`);
-                DoubleLog(`🏆 等级：${userInfo.grade_code}`);
-                DoubleLog(`💎 可用积分：${userInfo.ava_point}`);
+            if (userInfo) {
+                addMsg(`👤 ${userInfo.nick_name} | 🏆 ${userInfo.grade_code}`);
+                addMsg(`💎 可用积分：${userInfo.ava_point}`);
             }
             
             // 执行签到
-            let checkinResult = await user.checkin();
-            if (user.ckStatus && checkinResult) {
-                $.log(`[${user.userName || user.index}][INFO]签到成功\n`);
-                DoubleLog(`✅ 签到成功！`);
-                
-                // 解析奖励信息
-                if (checkinResult.awardList && checkinResult.awardList.length > 0) {
-                    const award = checkinResult.awardList[0];
-                    DoubleLog(`🎁 获得奖励：${award.award_desc}`);
-                    DoubleLog(`📊 连续签到：${checkinResult.consecutive ? '是' : '否'}`);
-                }
-                
-                // 签到后再次查询积分
-                let updatedInfo = await user.getMemberInfo();
-                if (updatedInfo) {
-                    DoubleLog(`💰 当前积分：${updatedInfo.ava_point}`);
+            let result = await user.checkin();
+            if (user.ckStatus) {
+                if (result?.awardList?.length > 0) {
+                    const award = result.awardList[0];
+                    addMsg(`✅ 签到成功！${award.award_desc}`);
+                    addMsg(`📊 连续签到：${result.consecutive ? '是' : '否'}`);
+                    
+                    // 查询最新积分
+                    let updated = await user.getMemberInfo();
+                    if (updated) addMsg(`💰 当前积分：${updated.ava_point}`);
+                } else if (result?.message) {
+                    addMsg(`ℹ️ ${result.message}`);
                 }
             } else {
-                DoubleLog(`⛔️ 「${user.userName ?? `账号${user.index}`}」签到失败或 Cookie 失效`);
+                addMsg(`⛔️ Cookie 失效，请重新获取`);
             }
             
-            // 发送通知
-            await sendMsg($.notifyMsg.join("\n"));
+            await sendMsg($.notifyMsg.join('\n'));
         } catch (e) {
-            DoubleLog(`[${user.userName ?? `账号${user.index}`}][ERROR]${e}`);
+            $.log(`[${user.userName}] 错误: ${e}\n`);
         }
     }
 }
@@ -85,17 +64,14 @@ async function main() {
 // 用户类
 class UserInfo {
     constructor(user) {
-        // 默认属性
         this.index = ++$.userIdx;
-        this.authorization = user.authorization || user;
-        this.memberId = user.memberId || "";
+        this.authorization = user.authorization;
+        this.memberId = user.memberId;
         this.userName = user.userName || `用户${this.index}`;
         this.ckStatus = true;
-        
-        // 请求封装
-        this.baseUrl = `https://api.alldragon.com`;
+        this.baseUrl = 'https://api.alldragon.com';
         this.headers = {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.64(0x1800402c) NetType/WIFI Language/zh_HK',
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.64(0x18004030) NetType/WIFI Language/zh_HK',
             'Content-Type': 'application/x-www-form-urlencoded',
             'Authorization': this.authorization,
             'Accept-Encoding': 'gzip,compress,br,deflate',
@@ -103,80 +79,59 @@ class UserInfo {
             'Referer': 'https://servicewechat.com/wxef49bf6a5aaef56a/70/page-frame.html',
             'Host': 'api.alldragon.com'
         };
-        
-        this.fetch = async (o) => {
-            try {
-                if (typeof o === 'string') o = { url: o };
-                if (o?.url?.startsWith("/")) o.url = this.baseUrl + o.url;
-                
-                const res = await Request({ 
-                    ...o, 
-                    headers: o.headers || this.headers, 
-                    url: o.url 
-                });
-                
-                debug(res, o?.url?.replace(/\/+$/, '').substring(o?.url?.lastIndexOf('/') + 1));
-                
-                if (res?.code !== 200) {
-                    throw new Error(res?.msg || `请求失败`);
-                }
-                
-                return res;
-            } catch (e) {
-                this.ckStatus = false;
-                $.log(`[${this.userName || this.index}][ERROR]请求发起失败! ${e}\n`);
-                return null;
-            }
-        }
     }
     
-    // 查询用户信息
-    async getMemberInfo() {
+    async request(opts) {
         try {
-            const opts = {
-                url: "/msite/member/getMemberInfo.json?needPoint=1&tenantId=4200&tenantCode=xycxmall&clientType=3",
-                method: "GET",
-                headers: this.headers
-            };
-            
-            let res = await this.fetch(opts);
-            
-            if (res && res.success) {
-                $.log(`[${this.userName || this.index}][INFO]获取用户信息成功\n`);
-                return res.data;
-            } else {
-                $.log(`[${this.userName || this.index}][ERROR]获取用户信息失败: ${res?.msg}\n`);
-                return null;
-            }
+            const url = opts.url.startsWith('http') ? opts.url : this.baseUrl + opts.url;
+            const res = await httpRequest({ ...opts, url, headers: opts.headers || this.headers });
+            if (isDebug) $.log(`[DEBUG] ${opts.url}: ${JSON.stringify(res)}\n`);
+            return res;
         } catch (e) {
-            $.log(`[${this.userName || this.index}][ERROR]获取用户信息异常: ${e}\n`);
+            this.ckStatus = false;
+            $.log(`[${this.userName}] 请求失败: ${e}\n`);
             return null;
         }
     }
     
-    // 每日签到
+    async getMemberInfo() {
+        try {
+            const res = await this.request({
+                url: '/msite/member/getMemberInfo.json?needPoint=1&tenantId=4200&tenantCode=xycxmall&clientType=3',
+                method: 'GET'
+            });
+            return res?.code === 200 ? res.data : null;
+        } catch (e) {
+            $.log(`[${this.userName}] 获取用户信息失败: ${e}\n`);
+            return null;
+        }
+    }
+    
     async checkin() {
         try {
-            const opts = {
-                url: "/mkt2/checkin/checkin.json",
-                method: "POST",
-                body: "tenantId=4200&tenantCode=xycxmall&clientType=3",
-                headers: this.headers
-            };
+            const res = await this.request({
+                url: '/mkt2/checkin/checkin.json',
+                method: 'POST',
+                body: 'tenantId=4200&tenantCode=xycxmall&clientType=3',
+                headers: { ...this.headers, 'Content-Length': '46' }
+            });
             
-            let res = await this.fetch(opts);
+            if (!res) return null;
             
-            if (res && res.success) {
-                $.log(`[${this.userName || this.index}][INFO]${res.msg}\n`);
+            if (res.code === 200) {
+                $.log(`[${this.userName}] 签到成功\n`);
                 return res.data;
-            } else {
+            } else if (res.code === 1004) {
                 this.ckStatus = false;
-                $.log(`[${this.userName || this.index}][ERROR]签到失败: ${res?.msg}\n`);
+                $.log(`[${this.userName}] ${res.msg}\n`);
                 return null;
+            } else {
+                $.log(`[${this.userName}] ${res.msg}\n`);
+                return { message: res.msg };
             }
         } catch (e) {
             this.ckStatus = false;
-            $.log(`[${this.userName || this.index}][ERROR]签到异常: ${e}\n`);
+            $.log(`[${this.userName}] 签到异常: ${e}\n`);
             return null;
         }
     }
@@ -185,225 +140,169 @@ class UserInfo {
 // 获取 Cookie
 async function getCookie() {
     try {
-        if ($request && $request.method === 'OPTIONS') return;
+        if ($request?.method === 'OPTIONS') return;
         
-        const headers = ObjectKeys2LowerCase($request.headers) ?? 
-            $.msg($.name, `⛔️ script run error!`, `错误的运行方式，请切换到 cron 环境`);
+        const headers = objectKeys2Lower($request.headers);
+        const authorization = headers.authorization;
+        if (!authorization) throw new Error("获取 Authorization 失败");
         
-        let authorization = headers.authorization;
-        
-        if (!authorization) {
-            throw new Error("获取 Authorization 失败！请检查配置是否正确");
-        }
-        
-        // 解析响应体获取用户详细信息
-        let memberId = "";
-        let userName = "未知用户";
-        let mobile = "";
-        let gradeCode = "";
-        let avaPoint = 0;
-        
+        // 解析响应体
+        let data = {};
         try {
-            const body = $.toObj($response.body);
-            if (body && body.success && body.data) {
-                const data = body.data;
-                userName = data.nick_name || "未知用户";
-                memberId = data.member_id || "";
-                mobile = data.mobile || "";
-                gradeCode = data.grade_code || "";
-                avaPoint = data.ava_point || 0;
+            const body = JSON.parse($response.body);
+            if (body?.success && body?.data) {
+                data = {
+                    memberId: body.data.member_id,
+                    userName: body.data.nick_name || '未知用户',
+                    mobile: body.data.mobile,
+                    gradeCode: body.data.grade_code,
+                    avaPoint: body.data.ava_point
+                };
             }
         } catch (e) {
-            $.log(`[ERROR]解析响应体失败: ${e}\n`);
-            // 降级方案：从 JWT 解析
-            try {
-                const parts = authorization.split('.');
-                if (parts.length === 3) {
-                    const payload = JSON.parse(atob(parts[1]));
-                    memberId = payload.memberId || "";
-                    mobile = payload.mobile || "";
-                    userName = mobile ? `用户${mobile.substr(-4)}` : "未知用户";
-                }
-            } catch (je) {
-                $.log(`[ERROR]解析 JWT 失败: ${je}\n`);
-            }
+            $.log(`解析响应失败，使用 JWT\n`);
+            const payload = JSON.parse(atob(authorization.split('.')[1]));
+            data = {
+                memberId: payload.memberId,
+                userName: `用户${payload.mobile?.substr(-4) || ''}`,
+                mobile: payload.mobile
+            };
         }
         
-        if (!memberId) {
-            throw new Error("无法获取会员ID，请重试");
-        }
+        if (!data.memberId) throw new Error("无法获取会员ID");
         
         const newData = {
-            "memberId": memberId,
-            "authorization": authorization,
-            "userName": userName,
-            "mobile": mobile,
-            "gradeCode": gradeCode,
-            "updateTime": new Date().toLocaleString('zh-CN')
+            memberId: data.memberId,
+            authorization,
+            userName: data.userName,
+            mobile: data.mobile,
+            updateTime: new Date().toLocaleString('zh-CN')
         };
         
-        // 检查是否是更新已有账号
-        const index = userCookie.findIndex(e => e.memberId == newData.memberId);
+        const index = userCookie.findIndex(e => e.memberId === newData.memberId);
         const isUpdate = index !== -1;
         
-        userCookie[index] ? userCookie[index] = newData : userCookie.push(newData);
+        if (isUpdate) {
+            userCookie[index] = newData;
+        } else {
+            userCookie.push(newData);
+        }
         
         $.setjson(userCookie, ckName);
         
-        // 发送通知
-        const notifyTitle = isUpdate ? '🔄 Cookie 更新成功' : '🎉 Cookie 获取成功';
-        const notifyContent = [
-            `👤 用户：${userName}`,
-            `📱 手机：${mobile}`,
-            `🆔 会员ID：${memberId}`,
-            `🏆 等级：${gradeCode}`,
-            `💎 积分：${avaPoint}`,
-            `⏰ 更新时间：${newData.updateTime}`
-        ].join('\n');
+        const msg = [
+            `👤 ${data.userName}`,
+            `📱 ${data.mobile}`,
+            `🆔 ${data.memberId}`,
+            data.gradeCode ? `🏆 ${data.gradeCode}` : '',
+            data.avaPoint ? `💎 ${data.avaPoint}分` : '',
+            `⏰ ${newData.updateTime}`
+        ].filter(Boolean).join('\n');
         
-        $.msg($.name, notifyTitle, notifyContent);
-        $.log(`[SUCCESS]${isUpdate ? '更新' : '获取'} Cookie 成功: ${userName} (${memberId})\n`);
+        $.msg($.name, isUpdate ? '🔄 Cookie 更新成功' : '🎉 Cookie 获取成功', msg);
     } catch (e) {
-        $.msg($.name, `⛔️ 获取 Cookie 失败!`, e.message || e);
-        $.log(`[ERROR]获取 Cookie 失败: ${e}\n`);
+        $.msg($.name, '⛔️ 获取 Cookie 失败', e.message || e);
         throw e;
     }
 }
 
-// 主程序执行入口
+// 主程序入口
 !(async () => {
     try {
-        if (typeof $request != "undefined") {
+        if (typeof $request !== "undefined") {
             await getCookie();
         } else {
-            await checkEnv();
+            if (userCookie.length === 0) throw new Error("未找到 Cookie");
+            $.log(`共找到 ${userCookie.length} 个账号\n`);
+            userCookie.forEach(user => $.userList.push(new UserInfo(user)));
             await main();
         }
     } catch (e) {
-        throw e;
-    }
-})()
-    .catch((e) => { 
         $.logErr(e);
-        $.msg($.name, `⛔️ script run error!`, e.message || e);
-    })
-    .finally(async () => {
+        $.msg($.name, '⛔️ 脚本运行错误', e.message || e);
+    } finally {
         $.done({ ok: 1 });
-    });
-
-// ========== 工具函数 ==========
-
-// 检查环境
-async function checkEnv() {
-    if (userCookie.length > 0) {
-        $.log(`[INFO]共找到 ${userCookie.length} 个账号\n`);
-        for (let user of userCookie) {
-            $.userList.push(new UserInfo(user));
-        }
-    } else {
-        $.log(`[ERROR]未找到 Cookie\n`);
-        throw new Error("未找到 CK");
     }
-}
+})();
 
-// 双端日志
-function DoubleLog(msg) {
-    if ($.is_debug === 'true' || $.is_debug === true) {
-        $.log(`[DEBUG]${msg}\n`);
-    }
+//========== 工具函数 ==========
+function addMsg(msg) {
+    if (isDebug) $.log(`[INFO] ${msg}\n`);
     $.notifyMsg.push(msg);
 }
 
-// Debug 日志
-function debug(res, api) {
-    if ($.is_debug === 'true' || $.is_debug === true) {
-        $.log(`[DEBUG][${api}]Response: ${JSON.stringify(res)}\n`);
-    }
-}
-
-// 发送通知
-async function sendMsg(message) {
-    if (!message) return;
+async function sendMsg(msg) {
+    if (!msg) return;
     if ($.isNode()) {
-        await notify.sendNotify($.name, message);
+        await notify.sendNotify($.name, msg);
     } else {
-        $.msg($.name, '', message);
+        $.msg($.name, '', msg);
     }
 }
 
-// 对象 key 转小写
-function ObjectKeys2LowerCase(obj) {
-    return Object.fromEntries(
-        Object.entries(obj).map(([k, v]) => [k.toLowerCase(), v])
-    );
+function objectKeys2Lower(obj) {
+    return Object.fromEntries(Object.entries(obj).map(([k, v]) => [k.toLowerCase(), v]));
 }
 
-// HTTP 请求封装
-async function Request(options) {
+async function httpRequest(opts) {
     if ($.isNode()) {
         const axios = require('axios');
-        try {
-            const response = await axios({
-                method: options.method || 'GET',
-                url: options.url,
-                headers: options.headers,
-                data: options.body,
-                params: options.params
-            });
-            return response.data;
-        } catch (error) {
-            throw error;
-        }
+        const config = {
+            method: opts.method || 'GET',
+            url: opts.url,
+            headers: opts.headers,
+            params: opts.params
+        };
+        if (opts.body) config.data = opts.body;
+        
+        const res = await axios(config);
+        return res.data;
     } else {
         return new Promise((resolve, reject) => {
-            $.http.post(options).then(response => {
-                resolve(JSON.parse(response.body));
-            }).catch(err => reject(err));
+            const method = (opts.method || 'GET').toLowerCase();
+            $httpClient[method]({
+                url: opts.url,
+                headers: opts.headers,
+                body: opts.body
+            }, (err, resp, body) => {
+                if (err) {
+                    reject(err);
+                } else {
+                    try {
+                        resolve(JSON.parse(body));
+                    } catch (e) {
+                        reject(e);
+                    }
+                }
+            });
         });
     }
 }
 
-// Env 类 (简化版)
+// Env 类
 function Env(name) {
     this.name = name;
     this.isNode = () => typeof module !== 'undefined' && !!module.exports;
-    this.toObj = (str, defaultValue = null) => {
-        try {
-            return JSON.parse(str);
-        } catch {
-            return defaultValue;
-        }
-    };
-    this.toStr = (obj, defaultValue = null) => {
-        try {
-            return JSON.stringify(obj);
-        } catch {
-            return defaultValue;
-        }
-    };
-    this.getdata = (key) => {
-        if (this.isNode()) {
-            return process.env[key] || null;
-        } else {
-            return $persistentStore.read(key) || null;
-        }
+    this.getdata = key => {
+        if (this.isNode()) return process.env[key];
+        return $persistentStore.read(key);
     };
     this.setdata = (val, key) => {
-        if (this.isNode()) {
-            return false;
-        } else {
-            return $persistentStore.write(val, key);
+        if (this.isNode()) return false;
+        return $persistentStore.write(val, key);
+    };
+    this.getjson = (key, def) => {
+        let val = this.getdata(key);
+        if (!val) return def;
+        try {
+            return JSON.parse(val);
+        } catch {
+            return def;
         }
     };
-    this.getjson = (key, defaultValue) => {
-        let json = this.getdata(key);
-        return json ? this.toObj(json, defaultValue) : defaultValue;
-    };
-    this.setjson = (val, key) => {
-        return this.setdata(this.toStr(val), key);
-    };
-    this.log = (msg) => console.log(msg);
-    this.logErr = (err) => console.log(err);
+    this.setjson = (val, key) => this.setdata(JSON.stringify(val), key);
+    this.log = msg => console.log(msg);
+    this.logErr = err => console.log(err);
     this.msg = (title, subtitle, message) => {
         if (this.isNode()) {
             console.log(`${title}\n${subtitle}\n${message}`);
@@ -411,24 +310,11 @@ function Env(name) {
             $notification.post(title, subtitle, message);
         }
     };
-    this.done = (value = {}) => {
+    this.done = val => {
         if (this.isNode()) {
             process.exit(0);
         } else {
-            $done(value);
-        }
-    };
-    this.http = {
-        post: (options) => {
-            return new Promise((resolve, reject) => {
-                $httpClient.post(options, (error, response, body) => {
-                    if (error) {
-                        reject(error);
-                    } else {
-                        resolve({ body, response });
-                    }
-                });
-            });
+            $done(val);
         }
     };
 }
